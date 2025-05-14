@@ -96,6 +96,8 @@
     let playlist = [];
     let playTimeout;
     let isPlaying = false;
+    let lastCurrentTime = 0;
+    let lastCheckTime = 0;
 
     function initPlaylist() {
       let savedPlaylist = JSON.parse(localStorage.getItem('playlist') || '[]');
@@ -214,12 +216,24 @@
       const currentTime = player ? player.getCurrentTime() : 0;
 
       if (event.data === YT.PlayerState.PLAYING) {
+        lastCurrentTime = currentTime;
+        lastCheckTime = Date.now();
         document.getElementById('status').textContent = `正在播放：${playlist[currentIndex].desc || '未知影片'} (時間: ${currentTime.toFixed(1)}s / ${duration.toFixed(1)}s)`;
         if (duration > 30) {
           playTimeout = setTimeout(() => {
-            if (player.getPlayerState() === YT.PlayerState.PLAYING && duration - currentTime > 5) {
-              document.getElementById('status').textContent = '播放卡住（可能為異常），跳到下一部影片';
+            const now = Date.now();
+            const currentTimeNow = player.getCurrentTime();
+            const timeElapsed = (now - lastCheckTime) / 1000;
+            const timeProgressed = currentTimeNow - lastCurrentTime;
+            if (player.getPlayerState() === YT.PlayerState.PLAYING && timeElapsed >= 30 && timeProgressed < 1 && duration - currentTimeNow > 5) {
+              document.getElementById('status').textContent = `播放卡住（進度無變化：${timeProgressed.toFixed(1)}s），跳到下一部影片`;
               loadNextValidVideo();
+            } else {
+              lastCurrentTime = currentTimeNow;
+              lastCheckTime = now;
+              if (player.getPlayerState() === YT.PlayerState.PLAYING) {
+                playTimeout = setTimeout(arguments.callee, 30000);
+              }
             }
           }, 30000);
         }
@@ -228,8 +242,6 @@
         loadNextValidVideo();
       } else if (event.data === YT.PlayerState.PAUSED) {
         document.getElementById('status').textContent = `播放暫停，可能為廣告 (時間: ${currentTime.toFixed(1)}s / ${duration.toFixed(1)}s)`;
-        // 暫時禁用暫停自動跳轉，等待用戶確認需求
-        // clearTimeout(pauseTimeout);
       }
     }
 
