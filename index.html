@@ -1,0 +1,316 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
+  <title>我的播放清單</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; padding: 20px; }
+    .container { max-width: 800px; margin: 0 auto; text-align: center; }
+    .disclaimer { background-color: #f8d7da; padding: 15px; border: 1px solid #dc3545; border-radius: 5px; margin-bottom: 20px; text-align: center; }
+    .disclaimer p { margin: 0; font-weight: bold; color: #721c24; }
+    .button-group { display: flex; justify-content: center; gap: 10px; margin: 10px 0; }
+    button { padding: 10px 20px; cursor: pointer; }
+    .playlist { margin-top: 20px; }
+    .playlist-item { margin: 10px 0; display: flex; align-items: center; justify-content: center; }
+    iframe { width: 560px; height: 315px; }
+    #status { color: gray; margin: 10px 0; }
+    .input-form { margin: 20px 0; }
+    .input-form input { margin: 5px; padding: 5px; }
+    .invalid { color: red; }
+    .remove-btn { margin-left: 10px; cursor: pointer; color: red; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="disclaimer">
+      <p>免責聲明：本網頁為個人非營利項目，僅嵌入來自 YouTube 的公開影片，版權歸原創作者所有。本站不儲存或上傳任何內容，對第三方內容的合法性不承擔責任。</p>
+    </div>
+    <h1>我的播放清單</h1>
+    <div class="button-group">
+      <button id="startBtn" onclick="startPlayback()">開始播放</button>
+      <button onclick="resumePlayback()">續播</button>
+      <button onclick="restartPlayback()">重新開始</button>
+      <button onclick="stopPlayback()">停止播放</button>
+    </div>
+    <div id="player" style="display: none;"></div>
+    <div id="status">請點擊「開始播放」</div>
+    <div class="input-form">
+      <h3>新增資源</h3>
+      <input type="text" id="videoUrl" placeholder="輸入 YouTube 網址" size="40">
+      <input type="text" id="videoDesc" placeholder="輸入說明" size="30">
+      <button onclick="addVideo()">新增</button>
+    </div>
+    <div class="playlist">
+      <h2>播放清單</h2>
+      <div id="playlistItems">
+        <!-- 動態生成的播放清單項目 -->
+      </div>
+    </div>
+  </div>
+
+  <script src="https://www.youtube.com/iframe_api"></script>
+  <script>
+    let player;
+    let currentIndex = 0;
+    let playlist = [];
+    let playTimeout;
+    let isPlaying = false;
+
+    function initPlaylist() {
+      let savedPlaylist = JSON.parse(localStorage.getItem('playlist') || '[]');
+      if (!Array.isArray(savedPlaylist) || savedPlaylist.some(item => !item.id || !item.desc)) {
+        savedPlaylist = [
+          { id: 'dQw4w9WgXcQ', desc: 'Rick Astley - Never Gonna Give You Up', checked: true, valid: true },
+          { id: '3tmd-ClpJxA', desc: 'Taylor Swift - Shake It Off', checked: true, valid: true }
+        ];
+        localStorage.setItem('playlist', JSON.stringify(savedPlaylist));
+      }
+      playlist = savedPlaylist;
+      updatePlaylistUI();
+    }
+
+    function updatePlaylistUI() {
+      const playlistItems = document.getElementById('playlistItems');
+      playlistItems.innerHTML = '';
+      playlist.forEach((video, index) => {
+        const div = document.createElement('div');
+        div.className = 'playlist-item' + (video.valid ? '' : ' invalid');
+        const displayDesc = video.desc || '未知影片';
+        const displayId = video.id || '未知ID';
+        div.innerHTML = `
+          <input type="checkbox" class="video-check" data-index="${index}" ${video.checked ? 'checked' : ''}>
+          <label>${displayDesc} (${displayId})</label>
+          <span class="remove-btn" onclick="removeVideo(${index})">[移除]</span>
+        `;
+        playlistItems.appendChild(div);
+      });
+      bindCheckboxEvents();
+      saveState();
+    }
+
+    function bindCheckboxEvents() {
+      document.querySelectorAll('.video-check').forEach(checkbox => {
+        checkbox.addEventListener('change', () => {
+          const index = parseInt(checkbox.getAttribute('data-index'));
+          playlist[index].checked = checkbox.checked;
+          saveState();
+          if (isPlaying && playlist.filter(v => v.checked).length > 0) {
+            currentIndex = 0;
+            loadNextValidVideo();
+          }
+        });
+      });
+    }
+
+    function addVideo() {
+      const urlInput = document.getElementById('videoUrl');
+      const descInput = document.getElementById('videoDesc');
+      const url = urlInput.value.trim();
+      const desc = descInput.value.trim() || '未命名影片';
+      const videoId = extractYouTubeId(url);
+      if (videoId) {
+        playlist.push({ id: videoId, desc, checked: true, valid: true });
+        updatePlaylistUI();
+        urlInput.value = '';
+        descInput.value = '';
+        document.getElementById('status').textContent = `已新增影片：${desc}`;
+      } else {
+        document.getElementById('status').textContent = '無效的 YouTube 網址';
+      }
+    }
+
+    function extractYouTubeId(url) {
+      const regExp = /^(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:[^\/\n\s]+\/\S+\/|(?:v|e(?:mbed)?)\/|\S*?[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
+      const match = url.match(regExp);
+      return match ? match[1] : null;
+    }
+
+    function removeVideo(index) {
+      playlist.splice(index, 1);
+      updatePlaylistUI();
+      document.getElementById('status').textContent = '已移除影片';
+      if (isPlaying && currentIndex >= playlist.length) {
+        currentIndex = 0;
+        loadNextValidVideo();
+      }
+    }
+
+    function loadPlayer() {
+      if (playlist.filter(v => v.checked).length === 0) {
+        document.getElementById('status').textContent = '請選擇至少一部影片';
+        return;
+      }
+      if (player) {
+        loadNextValidVideo();
+        return;
+      }
+      try {
+        player = new YT.Player('player', {
+          height: '315',
+          width: '560',
+          videoId: playlist[currentIndex].id,
+          playerVars: { 'mute': 1 },
+          events: {
+            'onReady': () => {
+              player.unMute();
+              document.getElementById('player').style.display = 'block';
+              document.getElementById('startBtn').style.display = 'none';
+              document.getElementById('status').textContent = '正在播放影片';
+              isPlaying = true;
+            },
+            'onStateChange': onPlayerStateChange,
+            'onError': onPlayerError
+          }
+        });
+      } catch (e) {
+        document.getElementById('status').textContent = '無法載入播放器，可能因 API 配額超限';
+      }
+    }
+
+    function onPlayerStateChange(event) {
+      clearTimeout(playTimeout);
+      const duration = player ? player.getDuration() : 0;
+      const currentTime = player ? player.getCurrentTime() : 0;
+
+      if (event.data === YT.PlayerState.PLAYING) {
+        document.getElementById('status').textContent = `正在播放：${playlist[currentIndex].desc || '未知影片'} (時間: ${currentTime.toFixed(1)}s / ${duration.toFixed(1)}s)`;
+        if (duration > 30) {
+          playTimeout = setTimeout(() => {
+            if (player.getPlayerState() === YT.PlayerState.PLAYING && duration - currentTime > 5) {
+              document.getElementById('status').textContent = '播放卡住（可能為異常），跳到下一部影片';
+              loadNextValidVideo();
+            }
+          }, 30000);
+        }
+      } else if (event.data === YT.PlayerState.ENDED) {
+        document.getElementById('status').textContent = `影片結束，播放下一部：${playlist[(currentIndex + 1) % playlist.length].desc || '未知影片'}`;
+        loadNextValidVideo();
+      } else if (event.data === YT.PlayerState.PAUSED) {
+        document.getElementById('status').textContent = `播放暫停，可能為廣告 (時間: ${currentTime.toFixed(1)}s / ${duration.toFixed(1)}s)`;
+        // 暫時禁用暫停自動跳轉，等待用戶確認需求
+        // clearTimeout(pauseTimeout);
+      }
+    }
+
+    function onPlayerError(event) {
+      const errorCodes = {
+        2: '無效影片 ID',
+        5: 'HTML5 播放器錯誤',
+        100: '影片不存在或被移除',
+        101: '影片不允許嵌入',
+        150: '影片不允許嵌入'
+      };
+      const errorMsg = errorCodes[event.data] || '未知錯誤';
+      document.getElementById('status').textContent = `錯誤：${errorMsg}`;
+      playlist[currentIndex].valid = false;
+      updatePlaylistUI();
+      loadNextValidVideo();
+    }
+
+    function loadNextValidVideo() {
+      clearTimeout(playTimeout);
+      let checkedVideos = playlist.filter(v => v.checked && v.valid);
+      if (checkedVideos.length === 0) {
+        document.getElementById('status').textContent = '無有效影片可播放';
+        isPlaying = false;
+        return;
+      }
+      currentIndex = (currentIndex + 1) % playlist.length;
+      while (!playlist[currentIndex].checked || !playlist[currentIndex].valid) {
+        currentIndex = (currentIndex + 1) % playlist.length;
+      }
+      player.loadVideoById(playlist[currentIndex].id);
+      saveState();
+    }
+
+    function saveState() {
+      localStorage.setItem('playlist', JSON.stringify(playlist));
+      localStorage.setItem('currentIndex', currentIndex);
+    }
+
+    function startPlayback() {
+      if (!isPlaying) {
+        loadPlayer();
+      }
+    }
+
+    function resumePlayback() {
+      const savedPlaylist = JSON.parse(localStorage.getItem('playlist') || '[]');
+      const savedIndex = parseInt(localStorage.getItem('currentIndex') || '0');
+      if (savedPlaylist.length > 0) {
+        playlist = savedPlaylist;
+        currentIndex = savedIndex % playlist.length;
+        updatePlaylistUI();
+        if (isPlaying) {
+          loadNextValidVideo();
+        } else {
+          document.getElementById('status').textContent = '請點擊「開始播放」';
+        }
+      }
+    }
+
+    function restartPlayback() {
+      currentIndex = 0;
+      if (isPlaying) {
+        loadNextValidVideo();
+      } else {
+        document.getElementById('status').textContent = '請點擊「開始播放」';
+      }
+    }
+
+    function stopPlayback() {
+      if (player && isPlaying) {
+        player.stopVideo();
+        document.getElementById('player').style.display = 'none';
+        document.getElementById('startBtn').style.display = 'inline-block';
+        clearTimeout(playTimeout);
+        isPlaying = false;
+        document.getElementById('status').textContent = '播放已停止';
+      }
+    }
+
+    initPlaylist();
+  </script>
+</body>
+</html>
